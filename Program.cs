@@ -19,11 +19,17 @@ namespace MakeTiff
             //WriteTile();
 
 
-            
+            Console.Write("请输入目录名称：");
             string path = Console.ReadLine();
             List<string> dirs = new List<string>(System.IO.Directory.GetDirectories(path));
-            List<string> pics = new List<string>(System.IO.Directory.GetFiles(dirs[0], "*.jpg"));
             dirs.Sort();
+            List<string> pics = new List<string>(System.IO.Directory.GetFiles(dirs[0], "*.png"));
+
+            Console.WriteLine("文件夹个数: {0}", dirs.Count);
+            Console.WriteLine("文件个数: {0}", pics.Count);
+            Console.WriteLine("总共: {0}", dirs.Count * pics.Count);
+
+            dirs.Sort((a, b) => { return b.CompareTo(a); });
             pics.Sort();
 
             string[,] files = new string[dirs.Count, pics.Count];
@@ -49,38 +55,62 @@ namespace MakeTiff
         /// <param name="outfile">输出文件</param>
         private static void UnionIMG(string[,] files, int tilewidth, int tileheight, string outfile)
         {
-            using (Tiff tif = Tiff.Open(outfile, "w")) {
-                // 
-                int width = files.GetLength(1) * tilewidth;         // 整个图片大小
-                int height = files.GetLength(0) * tileheight;       // 整个图片大小
+            try
+            {
+                    using (Tiff tif = Tiff.Open(outfile, "w")) {
+                    // 
+                    int width = files.GetLength(1) * tilewidth;         // 整个图片大小
+                    int height = files.GetLength(0) * tileheight;       // 整个图片大小
 
-                tif.SetField(TiffTag.IMAGEWIDTH, width);
-                tif.SetField(TiffTag.IMAGELENGTH, height);
-                tif.SetField(TiffTag.COMPRESSION, Compression.NONE);
-                tif.SetField(TiffTag.PHOTOMETRIC, Photometric.RGB);
-                tif.SetField(TiffTag.SUBFILETYPE, 0);
-                tif.SetField(TiffTag.BITSPERSAMPLE, 8);
-                tif.SetField(TiffTag.SAMPLESPERPIXEL, 3);
-                tif.SetField(TiffTag.PLANARCONFIG, PlanarConfig.CONTIG);
-                tif.SetField(TiffTag.TILEWIDTH, tilewidth);
-                tif.SetField(TiffTag.TILELENGTH, tileheight);
+                    tif.SetField(TiffTag.IMAGEWIDTH, width);
+                    tif.SetField(TiffTag.IMAGELENGTH, height);
+                    tif.SetField(TiffTag.COMPRESSION, Compression.NONE);
+                    tif.SetField(TiffTag.PHOTOMETRIC, Photometric.RGB);
+                    tif.SetField(TiffTag.SUBFILETYPE, 0);
+                    tif.SetField(TiffTag.BITSPERSAMPLE, 8);
+                    tif.SetField(TiffTag.SAMPLESPERPIXEL, 3);
+                    tif.SetField(TiffTag.PLANARCONFIG, PlanarConfig.CONTIG);
+                    tif.SetField(TiffTag.TILEWIDTH, tilewidth);
+                    tif.SetField(TiffTag.TILELENGTH, tileheight);
 
-                int index = 0;
-                for (int row = 0; row < files.GetLength(0); row++) {
-                    for (int col = 0; col < files.GetLength(1); col++) {
-                        // 打开图片
-                        byte[] pixels = null;
-                        using (Bitmap bmp = new Bitmap(files[row, col])) {
-                            pixels = GetImageRasterBytes(bmp, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
-                            bmp.Clone();
+                    int index = 0;
+                    for (int row = 0; row < files.GetLength(0); row++) {
+                        for (int col = 0; col < files.GetLength(1); col++) {
+                            // 打开图片
+                            byte[] pixels = null;
+                            string filename = files[row, col];
+                            if ((System.IO.File.Exists(filename) == false ||
+                                new System.IO.FileInfo(filename).Length == 0) &&
+                                System.IO.File.Exists("null.png")) { filename = "null.png"; }
+
+                            using (Bitmap bmp = new Bitmap(filename)) {
+                                PixelFormat bformat = bmp.PixelFormat;
+
+                                //Bitmap bitmap24 = new Bitmap(bmp.Width, bmp.Height, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
+                                //Graphics g = Graphics.FromImage(bitmap24);
+                                //g.DrawImageUnscaled(bmp, 0, 0);
+
+                                if (bformat == PixelFormat.Format32bppArgb) {
+                                    pixels = GetImageRasterBytes_ARGB(bmp, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                                }
+                                else pixels = GetImageRasterBytes(bmp, bformat);
+                                bmp.Clone();
+                            }
+                            tif.WriteEncodedTile(index++, pixels, pixels.Length);
+
+                            if (index % 100 == 0) Console.WriteLine("{0} / {1}", index, files.Length);
                         }
-                        tif.WriteEncodedTile(index++, pixels, pixels.Length);
-
-                        if (index % 100 == 0) Console.WriteLine("{0} / {1}", index, files.Length);
                     }
+                    tif.WriteDirectory();
                 }
-                tif.WriteDirectory();
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+                Console.WriteLine(ex.StackTrace);
+                throw ;
+            }
+            
         }
 
 
@@ -284,6 +314,61 @@ namespace MakeTiff
         }
 
         #region 读取图片信息
+
+        /// <summary>
+        /// 读取图片的RGB信息
+        /// </summary>
+        /// <param name="bmp"></param>
+        /// <param name="format"></param>
+        /// <returns></returns>
+        private static byte[] GetImageRasterBytes_ARGB(Bitmap bmp, PixelFormat format)
+        {
+            Rectangle rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+            byte[] bits = null;
+            try
+            {
+                // Lock the managed memory
+                BitmapData bmpdata = bmp.LockBits(rect, ImageLockMode.ReadWrite, format);
+                // Declare an array to hold the bytes of the bitmap.
+                bits = new byte[bmpdata.Stride * bmpdata.Height];
+                // Copy the values into the array.
+                System.Runtime.InteropServices.Marshal.Copy(bmpdata.Scan0, bits, 0, bits.Length);
+                // Release managed memory
+                bmp.UnlockBits(bmpdata);
+                // 重新排列顺序
+                return ConvertSamples_ARGB(bits);
+            }
+            catch { return null; }
+        }
+        /// <summary>
+        /// BGR排列给RGB排列
+        /// </summary>
+        /// <param name="data"></param>
+        private static byte[] ConvertSamples_ARGB(byte[] data)
+        {
+            byte[] outdata = new byte[(int)(data.Length * 0.75)];
+            const int samplesPerPixel = 4;      // 每个像素长度 RGB 所以4个字节
+            int n = 0;
+            for (int i = 0; i < data.Length; i += samplesPerPixel) {
+                if (data[i] == 0 &&
+                    data[i + 1] == 0 &&
+                    data[i + 2] == 0 &&
+                    data[i + 3] == 0)
+                {
+                    outdata[n++] = 255;
+                    outdata[n++] = 255;
+                    outdata[n++] = 255;
+                }
+                else
+                {
+                    outdata[n++] = data[i + 2];
+                    outdata[n++] = data[i + 1];
+                    outdata[n++] = data[i];
+                }
+            }
+            return outdata;
+        }
+
         /// <summary>
         /// 读取图片的RGB信息
         /// </summary>
